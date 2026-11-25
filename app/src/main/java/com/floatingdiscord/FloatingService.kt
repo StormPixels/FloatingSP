@@ -38,6 +38,9 @@ class FloatingService : Service() {
         const val MIN_SCALE = 0.4f
         const val MAX_SCALE = 1.0f
         const val START_SCALE = 0.65f
+        // Lebar viewport (px CSS) untuk mode "desktop sempit". Kecilkan jika sidebar
+        // Discord belum menciut, besarkan jika teks terlalu kecil.
+        const val NARROW_W = 560
     }
 
     private lateinit var wm: WindowManager
@@ -177,9 +180,19 @@ class FloatingService : Service() {
             setAcceptCookie(true)
             setAcceptThirdPartyCookies(wv, true)
         }
+        // 0 = mobile, 1 = desktop, 2 = desktop sempit (UA desktop, viewport sempit)
+        var mode = 0
         wv.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 CookieManager.getInstance().flush()
+                if (mode == 2) {
+                    view?.evaluateJavascript(
+                        "(function(){var m=document.querySelector('meta[name=viewport]');" +
+                        "if(!m){m=document.createElement('meta');m.name='viewport';" +
+                        "document.head.appendChild(m);}" +
+                        "m.content='width=$NARROW_W';})()", null
+                    )
+                }
             }
         }
         wv.setBackgroundColor(Color.parseColor("#313338"))
@@ -218,11 +231,11 @@ class FloatingService : Service() {
             }
             bar.addView(t, LinearLayout.LayoutParams(btnW, barH))
         }
-        var desktop = false
-        btn("🖥") { t ->
-            desktop = !desktop
-            wv.settings.userAgentString = if (desktop) UA else mobileUA
-            t.text = if (desktop) "📱" else "🖥"
+        // Label = mode saat ini: 📱 mobile, 🖥 desktop, 📏 desktop sempit
+        btn("📱") { t ->
+            mode = (mode + 1) % 3
+            wv.settings.userAgentString = if (mode == 0) mobileUA else UA
+            t.text = when (mode) { 0 -> "📱"; 1 -> "🖥"; else -> "📏" }
             wv.reload()
         }
         btn("🔍") {
