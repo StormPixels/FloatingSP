@@ -40,7 +40,7 @@ class FloatingService : Service() {
         const val START_SCALE = 0.65f
         // Lebar viewport (px CSS) untuk mode "desktop sempit". Kecilkan jika sidebar
         // Discord belum menciut, besarkan jika teks terlalu kecil.
-        const val NARROW_W = 560
+        const val NARROW_W = 800
     }
 
     private lateinit var wm: WindowManager
