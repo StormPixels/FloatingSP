@@ -24,7 +24,6 @@ import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
-import kotlin.math.max
 
 class FloatingService : Service() {
 
@@ -35,12 +34,21 @@ class FloatingService : Service() {
         const val URL = "https://discord.com/app"
         const val UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        const val MIN_SCALE = 0.4f
+        const val MAX_SCALE = 1.0f
+        const val START_SCALE = 0.65f
     }
 
     private lateinit var wm: WindowManager
     private lateinit var lp: WindowManager.LayoutParams
     private var root: OverlayFrame? = null
     private var web: WebView? = null
+
+    // Ukuran "layar virtual" tempat halaman dirender. Jendela hanya menampilkannya
+    // dalam skala tertentu, jadi isi ikut mengecil/membesar (bukan terpotong).
+    private var baseW = 0
+    private var baseH = 0
+    private var scale = START_SCALE
 
     class OverlayFrame(c: Context, private val onOutside: () -> Unit) : FrameLayout(c) {
         override fun onTouchEvent(e: MotionEvent): Boolean {
@@ -115,9 +123,13 @@ class FloatingService : Service() {
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val dm = resources.displayMetrics
 
+        baseW = dm.widthPixels
+        baseH = dm.heightPixels
+        scale = START_SCALE
+
         lp = WindowManager.LayoutParams(
-            (dm.widthPixels * 0.9).toInt(),
-            (dm.heightPixels * 0.55).toInt(),
+            (baseW * scale).toInt(),
+            (baseH * scale).toInt(),
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
@@ -126,30 +138,37 @@ class FloatingService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = (dm.widthPixels * 0.05).toInt()
-            y = dp(80)
+            x = dp(24)
+            y = dp(48)
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN
         }
 
         val frame = OverlayFrame(this) { setFocusable(false) }
         frame.setBackgroundColor(Color.parseColor("#1E1F22"))
+        frame.clipChildren = true
 
         // --- WebView ---
         val wv = WebView(this)
         wv.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
-            userAgentString = UA
             useWideViewPort = true
             loadWithOverviewMode = true
             builtInZoomControls = false
-            mediaPlaybackRequiresUserGesture = true
         }
+        // UA mobile: hapus penanda WebView supaya Discord menyajikan layout HP
+        val mobileUA = wv.settings.userAgentString
+            .replace("; wv", "").replace("Version/4.0 ", "")
+        wv.settings.userAgentString = mobileUA
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
             setAcceptThirdPartyCookies(wv, true)
         }
-        wv.webViewClient = WebViewClient()
+        wv.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                CookieManager.getInstance().flush()
+            }
+        }
         wv.setBackgroundColor(Color.parseColor("#313338"))
         wv.setOnTouchListener { v, e ->
             if (e.action == MotionEvent.ACTION_DOWN) {
@@ -161,7 +180,9 @@ class FloatingService : Service() {
         wv.loadUrl(URL)
         web = wv
 
-        // --- Title bar ---
+        // --- Title bar (ukuran logis; ikut diskalakan bersama isi) ---
+        val barH = dp(48)
+        val btnW = dp(56)
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(Color.parseColor("#111214"))
@@ -169,27 +190,53 @@ class FloatingService : Service() {
         val title = TextView(this).apply {
             text = "  Discord"
             setTextColor(Color.WHITE)
-            textSize = 14f
+            textSize = 16f
             gravity = Gravity.CENTER_VERTICAL
         }
-        bar.addView(title, LinearLayout.LayoutParams(0, dp(40), 1f))
+        bar.addView(title, LinearLayout.LayoutParams(0, barH, 1f))
 
-        fun btn(label: String, onClick: () -> Unit) {
+        fun btn(label: String, onClick: (TextView) -> Unit) {
             val t = TextView(this).apply {
                 text = label
                 setTextColor(Color.WHITE)
-                textSize = 18f
+                textSize = 20f
                 gravity = Gravity.CENTER
-                setOnClickListener { onClick() }
+                setOnClickListener { onClick(this) }
             }
-            bar.addView(t, LinearLayout.LayoutParams(dp(44), dp(40)))
+            bar.addView(t, LinearLayout.LayoutParams(btnW, barH))
+        }
+        var desktop = false
+        btn("🖥") { t ->
+            desktop = !desktop
+            wv.settings.userAgentString = if (desktop) UA else mobileUA
+            t.text = if (desktop) "📱" else "🖥"
+            wv.reload()
         }
         btn("◀") { if (wv.canGoBack()) wv.goBack() }
         btn("⟳") { wv.reload() }
         btn("—") { frame.visibility = View.GONE; setFocusable(false) }
         btn("✕") { stopSelf() }
 
-        // drag
+        // --- Konten berukuran tetap baseW x baseH, lalu diskalakan ---
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        content.addView(bar, LinearLayout.LayoutParams(-1, barH))
+        content.addView(wv, LinearLayout.LayoutParams(-1, 0, 1f))
+        content.pivotX = 0f
+        content.pivotY = 0f
+        content.scaleX = scale
+        content.scaleY = scale
+        frame.addView(content, FrameLayout.LayoutParams(baseW, baseH))
+
+        fun applyScale(s: Float) {
+            scale = s.coerceIn(MIN_SCALE, MAX_SCALE)
+            content.scaleX = scale
+            content.scaleY = scale
+            lp.width = (baseW * scale).toInt()
+            lp.height = (baseH * scale).toInt()
+            wm.updateViewLayout(frame, lp)
+        }
+
+        // --- Geser jendela lewat title bar ---
         var sx = 0; var sy = 0; var ox = 0f; var oy = 0f
         title.setOnTouchListener { _, e ->
             when (e.action) {
@@ -203,12 +250,7 @@ class FloatingService : Service() {
             true
         }
 
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        col.addView(bar, LinearLayout.LayoutParams(-1, dp(40)))
-        col.addView(wv, LinearLayout.LayoutParams(-1, 0, 1f))
-        frame.addView(col, FrameLayout.LayoutParams(-1, -1))
-
-        // --- Resize handle ---
+        // --- Handle resize: skala proporsional, isi ikut berubah ---
         val handle = TextView(this).apply {
             text = "◢"
             setTextColor(Color.WHITE)
@@ -221,14 +263,14 @@ class FloatingService : Service() {
             when (e.action) {
                 MotionEvent.ACTION_DOWN -> { sw = lp.width; sh = lp.height; rx = e.rawX; ry = e.rawY }
                 MotionEvent.ACTION_MOVE -> {
-                    lp.width = max(dp(220), sw + (e.rawX - rx).toInt())
-                    lp.height = max(dp(200), sh + (e.rawY - ry).toInt())
-                    wm.updateViewLayout(frame, lp)
+                    val s1 = (sw + (e.rawX - rx)) / baseW
+                    val s2 = (sh + (e.rawY - ry)) / baseH
+                    applyScale((s1 + s2) / 2f)
                 }
             }
             true
         }
-        frame.addView(handle, FrameLayout.LayoutParams(dp(36), dp(36), Gravity.BOTTOM or Gravity.END))
+        frame.addView(handle, FrameLayout.LayoutParams(dp(32), dp(32), Gravity.BOTTOM or Gravity.END))
 
         root = frame
         wm.addView(frame, lp)
