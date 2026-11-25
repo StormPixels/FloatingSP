@@ -14,6 +14,7 @@ import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
@@ -118,6 +119,18 @@ class FloatingService : Service() {
         }
     }
 
+    private fun sendCtrlF(v: View) {
+        val t = android.os.SystemClock.uptimeMillis()
+        val ctrl = KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON
+        fun key(action: Int, code: Int, meta: Int) = v.dispatchKeyEvent(
+            KeyEvent(t, t, action, code, 0, meta)
+        )
+        key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_CTRL_LEFT, ctrl)
+        key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_F, ctrl)
+        key(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_F, ctrl)
+        key(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_CTRL_LEFT, 0)
+    }
+
     @SuppressLint("SetJavaScriptEnabled", "ClickableViewAccessibility")
     private fun createWindow() {
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -182,7 +195,7 @@ class FloatingService : Service() {
 
         // --- Title bar (ukuran logis; ikut diskalakan bersama isi) ---
         val barH = dp(48)
-        val btnW = dp(56)
+        val btnW = dp(46)
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(Color.parseColor("#111214"))
@@ -212,6 +225,12 @@ class FloatingService : Service() {
             t.text = if (desktop) "📱" else "🖥"
             wv.reload()
         }
+        btn("🔍") {
+            // Kirim Ctrl+F ke Discord. Jendela harus fokus dulu agar key event diterima.
+            setFocusable(true)
+            wv.requestFocus()
+            wv.postDelayed({ sendCtrlF(wv) }, 120)
+        }
         btn("◀") { if (wv.canGoBack()) wv.goBack() }
         btn("⟳") { wv.reload() }
         btn("—") { frame.visibility = View.GONE; setFocusable(false) }
@@ -225,14 +244,21 @@ class FloatingService : Service() {
         content.pivotY = 0f
         content.scaleX = scale
         content.scaleY = scale
-        frame.addView(content, FrameLayout.LayoutParams(baseW, baseH))
+        val contentLp = FrameLayout.LayoutParams(baseW, baseH)
+        frame.addView(content, contentLp)
 
-        fun applyScale(s: Float) {
+        // Lebar diatur lewat skala; tinggi diatur lewat tinggi logis halaman
+        // (WebView benar-benar lebih tinggi/pendek, isi tidak terpotong).
+        fun applyResize(s: Float, heightPx: Float) {
             scale = s.coerceIn(MIN_SCALE, MAX_SCALE)
+            val hPx = heightPx.coerceIn(dp(160).toFloat(), dm.heightPixels.toFloat())
+            baseH = (hPx / scale).toInt()
+            contentLp.height = baseH
+            content.layoutParams = contentLp
             content.scaleX = scale
             content.scaleY = scale
             lp.width = (baseW * scale).toInt()
-            lp.height = (baseH * scale).toInt()
+            lp.height = hPx.toInt()
             wm.updateViewLayout(frame, lp)
         }
 
@@ -250,7 +276,7 @@ class FloatingService : Service() {
             true
         }
 
-        // --- Handle resize: skala proporsional, isi ikut berubah ---
+        // --- Handle resize: geser kiri-kanan = lebar (skala), atas-bawah = tinggi ---
         val handle = TextView(this).apply {
             text = "◢"
             setTextColor(Color.WHITE)
@@ -263,9 +289,7 @@ class FloatingService : Service() {
             when (e.action) {
                 MotionEvent.ACTION_DOWN -> { sw = lp.width; sh = lp.height; rx = e.rawX; ry = e.rawY }
                 MotionEvent.ACTION_MOVE -> {
-                    val s1 = (sw + (e.rawX - rx)) / baseW
-                    val s2 = (sh + (e.rawY - ry)) / baseH
-                    applyScale((s1 + s2) / 2f)
+                    applyResize((sw + (e.rawX - rx)) / baseW, sh + (e.rawY - ry))
                 }
             }
             true
